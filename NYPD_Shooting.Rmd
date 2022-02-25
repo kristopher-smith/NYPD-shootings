@@ -1,0 +1,396 @@
+---
+title: "NYPD Shooting's Analysis"
+author: "K.Smith"
+date: "2/3/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r import_packages, include=FALSE}
+# import necessary packages
+library(tidyselect)
+library(tidyverse)  # Many packages for cleaning and tidying data
+library(tidyr)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(zoo)
+library(caret)
+library(caTools)
+
+```
+
+# "Effect's of the Pandemic on Murder/Shooting's in New York City"
+
+## Data
+
+* The data for this analysis was sourced from the reports supplied by the NYPD.
+* I Used the historical data and combined it with the year to date dataset.
+  * The Historical data set can be found [here](https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic/resource/c564b578-fd8a-4005-8365-34150d306cc4).
+  * The Year-to-date data set can be found [here](https://catalog.data.gov/dataset/nypd-shooting-incident-data-year-to-date/resource/34b48c14-919d-4e65-bdd6-be833afd7a39).
+
+```{r get_jhu_data}
+## Get Data needed
+url_in <- "https://data.cityofnewyork.us/api/views/"
+## This can be a vector of different csv files that start with the above url
+file_names <- c("833y-fsy8/rows.csv?accessType=DOWNLOAD",
+                "5ucz-vwe8/rows.csv?accessType=DOWNLOAD")
+               
+## Concantenate them together
+urls <- str_c(url_in, file_names)
+urls
+```
+## Preview Data
+
+* After scraping the data we can format it from csv to a DataFrame
+
+
+```{r import_data_historical}
+
+############### FOR HISTORICAL ANALYSIS ############### 
+## Create DataFrame from first file in urls for historical shootings
+shootings_historical <- read_csv(urls[1])
+#shootings <- shootings_hist
+shootings_historical <- shootings_historical[order(shootings_historical$OCCUR_DATE), ]
+tail(shootings_historical)
+
+```
+
+
+* Missing Data
+  * Since one of the questions I am interested in is the impact of the pandemic on shootings, we can see from above that the historical data will not be sufficient to answer these questions.
+  * I will be scraping a second data set from the same repository provided by the NYPD, and combining that with the historical data.
+
+```{r import_data}
+
+
+############### FOR CURRENT ANALYSIS ############### 
+## Create DataFrame from second file in urls for current shootings
+shootings_current <- read_csv(urls[2])
+#shootings <- shootings_current
+
+############### FOR HISTORICAL THROUGH CURRENT ANALYSIS ############### 
+## If we want to merge historical and current choose this path:
+# Remove different columns that we don't need
+shootings_hist <- shootings_historical %>%
+  select(-c(Lon_Lat))
+
+shootings_current <- shootings_current %>%
+  select(-c("New Georeferenced Column"))
+
+## Now they will play nice together when we join them
+shootings <- rbind(shootings_hist, shootings_current)
+
+## Preview Data
+sample_n(shootings, 13)
+
+```
+
+### What variables are in the data?
+
+* INCIDENT_KEY
+  * Assuming this is some sort of record keeping identifier variable.
+* OCCUR_DATE
+  * Date of the shooting incident.
+* OCCUR_TIME
+  * Time of the shooting incident.
+* BORO
+  * New York City Borough where the shootings took place.
+* PRECINCT
+  * The responding New York City Police department precinct identifier.
+* JURISDICTION_CODE
+  * Code indentifying which jurisdiction the incidents occurred in.
+* LOCATION_DESC 
+  * A brief description of the building/environment type where the incident occurred.
+* STATISTICAL_MURDER_FLAG 
+  * Indicator variable for which shootings resulted in murder:TRUE for a fatal incident, FALSE for no fatality recorded.
+* VIC_AGE_GROUP
+  * Age range for victims of incident's.
+* VIC_SEX
+  * Sex of victims.
+* VIC_RACE
+  * Race of victims.
+* X_COORD_ 
+  * Geolocation coordinates identifier(function of Lat and Long).
+* Y_COORD_ 
+  * Geolocation coordinates identifier(function of Lat and Long).
+* PERP_AGE_GROUP
+  * Age range alleged of perpetrators.
+* PERP_SEX
+  * Sex of alleged of perpetrators.
+* PERP_RACE 
+  * Race of alleged of perpetrators.
+* Longitude
+  * Longitudinal geographic coordinate where incident took place.
+* Latitude
+  * Latitudinal geographic coordinate where incident took place.
+
+## Cleaning Data
+
+* After cleaning the DataFrame by removing some columns I was not interested in, and reformatting the OCCURR_DATE column to a date object and the values to datetime objects, and then sorting the dataframe in chronological order by this columns. It looks like this: 
+```{r cleaning_date}
+
+## Downsize to just the variables of interest (to me), 
+## and reformat OCCUR_DATE column values from a chr to date object
+shootings <- shootings %>%
+  mutate(shootings, OCCUR_DATE= as.Date(OCCUR_DATE, format= "%m/%d/%Y")) %>%
+  select(c(OCCUR_DATE, BORO, STATISTICAL_MURDER_FLAG, OCCUR_TIME,
+           VIC_AGE_GROUP, VIC_SEX, VIC_RACE, PERP_AGE_GROUP, PERP_SEX, PERP_RACE))
+
+## Preview changes
+shootings <- shootings[order(shootings$OCCUR_DATE), ]
+head(shootings, 13)
+```
+## Transforming Data
+
+* I was interested in the murder rate per shooting. So I converted the values in the "STATISTICAL_MURDER_FLAG" column to indicator variables. FALSE becomes a 0 and TRUE becomes a 1. This is helpful for counting. So after summing up total murders and total shootings we can then compute the murder ratio (what proportion of shootings result in death). This is given simply by: $Murder Ratio = \frac{Total Murders}{Total Shootings}$
+
+
+```{r cleaning_data}
+## I want to convert the STATISTICAL_MURDER_FLAG column to dummy variables
+## so that TRUE's become 1 and FALSE's become 0 for counting methods.
+shootings$STATISTICAL_MURDER_FLAG <- 
+  as.numeric(shootings$STATISTICAL_MURDER_FLAG == "TRUE")
+
+## Tally the total shootings
+total_shootings <- length(shootings$STATISTICAL_MURDER_FLAG)
+## Tally the total murders
+total_murders <- sum(shootings$STATISTICAL_MURDER_FLAG)
+
+
+
+## What percentage of reported shootings result in murder?
+murder_ratio <- total_murders/total_shootings
+murder_percent <- round(murder_ratio * 100, digits = 2)
+
+paste("Total Shootings:" ,total_shootings);
+paste("Total Murders:" ,total_murders);
+paste("Murder Ratio:" , murder_percent, "%")
+```
+## Plotting
+
+* At the time of this analysis the murder ratio was 19.08%. 
+* It feels likely that roughly $\frac{1}{5}$ of shootings would result in murders
+* I wanted to plot some things out so I decided to see what the average murder rates were over time.
+```{r plot_data}
+##################################
+## Create a dataframe without variables to plot shootings/murders over time
+shootings_time <- shootings %>%
+  select(c(OCCUR_DATE, STATISTICAL_MURDER_FLAG))
+
+## Create a dataframe without variables to plot shootings/murders over time of day
+shootings_time_day <- shootings %>%
+  select(c(OCCUR_DATE, STATISTICAL_MURDER_FLAG, OCCUR_TIME))
+
+## Pivot table so that there is only one row per day and the murders are summed per day.
+shootings_time <- shootings_time %>%
+  group_by(OCCUR_DATE) %>%
+  summarize(STATISTICAL_MURDER_FLAG = sum(STATISTICAL_MURDER_FLAG)) %>%
+  select(OCCUR_DATE, STATISTICAL_MURDER_FLAG)
+
+## Rolling average plot
+avg_over_time_plot <- shootings_time %>%
+  mutate(seven_avg = rollmean(STATISTICAL_MURDER_FLAG, 100,
+                              align = 'left',
+                              fill = 0)) %>%
+  relocate(seven_avg) %>%
+  ggplot(aes(x=OCCUR_DATE,
+             y=STATISTICAL_MURDER_FLAG)) +
+  #geom_col(fill = 'red') +
+  geom_line(aes(y = seven_avg),
+            color = 'brown',
+            alpha = .85,
+            size = .55) +
+  labs(x = "Years", y = "Average Murders Day",
+       title = "100 Day Rolling Average") +
+  theme(plot.title = element_text(hjust=0.5, size=20, face="bold")) +
+  geom_vline(xintercept = as.POSIXct(as.Date("2020-3-16"))) 
+
+avg_over_time_plot
+
+```
+
+
+```{r murders_over_time_plot1}
+
+## Histogram of murders over time
+hist_over_time <- shootings_time_day %>%
+  ggplot(aes(x = OCCUR_DATE)) +
+  geom_histogram(bins = 52, col='dark green') +
+  labs(x="Year", y="Shooting's", title="Shooting's Over Time") +
+       theme(plot.title = element_text(hjust=0.5, size=20, face="bold"))
+
+hist_over_time
+
+```
+
+
+
+* We can see a steep drop off in murders on both graphs and this is simply due to the data missing beyond this date.
+* It would appear that since 2006 the murder rate has trended downward. This was reversed in the pandemic era. 
+* This is a very alarming graph. The pandemic has impacted social statistics immensely and I am sure we will be discovering more as the data catches up.
+* This last plot is admittedly a hard plot to look at, but I do believe it conveys some important data. 
+* So I made a different style plot with the same data, hopefully easier to look at:
+
+
+```{r murders_over_time_plot2}
+plot_to_murder <- ggplot(shootings_time,
+            aes(x=OCCUR_DATE, 
+                y = STATISTICAL_MURDER_FLAG)) +
+  geom_smooth(color="brown", alpha = .75) +
+  labs(x="Year", y="Murders", 
+       title="Average Murders Over Time") +
+       theme(plot.title = element_text(hjust=0.5, 
+                                       size=20, face="bold"))
+plot_to_murder 
+
+```
+
+## More Plotting
+
+* Another Question I was interested in was what time of day most incident's are occuring.
+
+
+
+```{r murders_time_of_day_plot}
+
+murders_hourly_distribution <- function(x, split=24) {
+  hours <- as.numeric(strftime(x, "%H"))
+  years <- as.POSIXct(paste(ifelse(hours < split,
+                                   "2020-01-02","2020-01-01"),
+                            strftime(x, "%H:%M:%S")))
+  }
+
+hourly_distribution_plot2 <- shootings_time_day %>%
+  mutate(time = murders_hourly_distribution(OCCUR_TIME)) %>% 
+  ggplot(aes(time)) +
+  geom_histogram(bins = 67, col='light blue') +
+  scale_x_datetime(labels = function(x) 
+    format(x, format = "%H:%M")) + 
+  xlab("Noon") +
+  ylab("Frequency of Incidents") +
+  theme(plot.title = element_text(hjust=0.5, size=20, face="bold", 
+                                  color ='dark blue')) +
+  ggtitle("Average Incidence by Time of Day")
+
+hourly_distribution_plot2
+
+```
+
+## Bias
+
+* When I was thinking about this question of how the pandemic would affect the rate of shootings I tried to approach this question without any expectations in order to limit the affect that bias would have to my approach or visualizations.
+* For the sake of what bias may look like I asked friends and family what they thought the data would reveal and got very different predictions.
+* Many people thought that the numbers would be lower after the shutdown, the logic being that people would be home and not out and about giving less opportunity for these incidences to take place.
+* Of course the other side thought that lockdowns would cause a spike in these numbers, most reasoned along the lines of "idle hands are the devils playground" or just people being out of work or money and acting desperately.
+* I mention this merely because if I was approaching this question from one of those angles I may be tempted to massage the data into telling the story I wanted to. 
+
+## Modelling
+
+### Explainatory Modelling
+
+* Using standard OLS I will model if time of day has an effect of fatality of a shooting.
+
+```{r explainatory_model1}
+
+mod1 <- lm(shootings_time_day$STATISTICAL_MURDER_FLAG ~ shootings_time_day$OCCUR_TIME)
+summary(mod1)
+
+```
+
+
+* It would appear that time of day does not have a significant effect of shooting's be more or less fatal.
+* That seems like common sense, and the p-value confirms this intuition.
+* Let's see of the year has any impact on how shootings being fatal.
+
+```{r explainatory_model2}
+
+mod2 <- lm(shootings_time_day$STATISTICAL_MURDER_FLAG ~ shootings_time_day$OCCUR_DATE)
+summary(mod2)
+
+```
+
+* Again it would appear there is no real significant impact the year has on shootings being more or less fatal.
+* It is worth noting that the p-value dropped quite a bit for this one, however I don't think this is enough evidence to suggest that shooting's are getting more deadly with time.
+
+## More Modelling
+
+### Predictive Modelling
+
+```{r data_refresher}
+## Let's look at the dataset since it has been a while.
+glimpse(shootings)
+```
+
+* We can see that most of our data is categorical so I will try to do some sort of classification regression.
+* First we need to change some of the variables for this to work properly.
+
+```{r transform_}
+
+names <- c(1,2,5,6,7,8,9,10)
+shootings[,names] <- lapply(shootings[,names] , factor)
+glimpse(shootings)
+
+```
+
+
+```{r predictive_model1}
+
+## New dataframe with selected variables
+shootings_2 <- shootings %>%
+  select(-c(OCCUR_DATE, OCCUR_TIME,
+            STATISTICAL_MURDER_FLAG))
+
+## Set the seed for reproducibility
+set.seed(2022)
+ 
+## Split the data up into training and testing sets
+spl = sample.split(shootings_2$VIC_AGE_GROUP, SplitRatio = 0.7)
+train = subset(shootings_2, spl==TRUE)
+test  = subset(shootings_2, spl==FALSE)
+
+## See what dimensions our training and testing set's have
+#print(dim(train)); print(dim(test))
+
+## Let's look at the predictive value of each variable on Victim's Age Group
+model_glm = glm(VIC_AGE_GROUP ~  . , family="binomial", data = shootings_2)
+summary(model_glm)
+```
+```{r predict}
+
+set.seed(2022)
+# Predictions on the training set
+predictTrain = predict(model_glm, data = train, type = "response")
+
+training_accuracy <- sum(predictTrain >= 0.5) / length(predictTrain)
+paste("Training Accuracy = ", round(training_accuracy, 3))
+#Predictions on the test set
+predictTest = predict(model_glm, newdata = test, type = "response")
+
+# Accuracy of our model
+test <- table(test$VIC_AGE_GROUP, predictTest >= 0.5)
+
+paste("Predictions on Test Set"); test
+
+```
+
+
+## Conclusion
+
+* On murder trends:
+  * It appears that with the data provided, going back almost two decades the shootings and murder rates were declining over time.
+  * This trend the data revealed was reversed when the first shutdown of the pandemic began in early 2020.
+
+* On popular times of day for shootings:
+  * It would appear that most shootings and therefore murders as well happen in the hours leading up to and trailing midnight.
+  * This doesn't come as a big surprise but it is always good to confirm intuitions with data.
+
+* On modelling:
+  * Using most all of the variables we were able to predict with very high accuracy the age group of the victim's. 
+  * Although we did have quite a bit of training data for this small task, it is interesting to think about that with basically data on victim's sex and race, the perpetrator's age, sex, and race, and neighborhood data, we are able to predict the age group of the victim's. 
+  * With more analysis we could decide how much if at all this model is overfitting.
